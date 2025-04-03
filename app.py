@@ -129,7 +129,7 @@ def enviar_audio(numero, audio_filename):
         logger.error(f"❌ Erro ao enviar áudio: {e}")
 
 # Servidor de arquivos de áudio
-definir
+
 @app.route("/audio/<filename>")
 def servir_audio(filename):
     return send_from_directory(".", filename)
