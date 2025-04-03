@@ -1,54 +1,43 @@
-# 📦 Importações
 from flask import Flask, request, jsonify, Response, send_from_directory
-from dotenv import load_dotenv
-from openai import OpenAI
-from pathlib import Path
-from io import BytesIO
 import os
 import requests
+from dotenv import load_dotenv
+from openai import OpenAI
+from io import BytesIO
+from pathlib import Path
+from datetime import datetime, timedelta, timezone
 
-# 🚀 App Flask
 app = Flask(__name__)
-
-# 🔐 Variáveis de ambiente
 load_dotenv()
+
+# Variáveis de ambiente
 openai_key = os.getenv("OPENAI_API_KEY")
 whatsapp_token = os.getenv("WHATSAPP_TOKEN")
 whatsapp_phone_id = os.getenv("WHATSAPP_PHONE_ID")
 verify_token = os.getenv("VERIFY_TOKEN")
 
-# 🤖 Cliente OpenAI
 client = OpenAI(api_key=openai_key)
+ARQUIVO_AUDIO = "audio_ammozinho.mp3"
 
-# 📁 Caminho do áudio
-PASTA_AUDIO = Path("static/audio")
-ARQUIVO_AUDIO = PASTA_AUDIO / "audio_ammozinho.mp3"
-PASTA_AUDIO.mkdir(parents=True, exist_ok=True)
-
-# 📄 Leitura de contexto e instruções
+# Carrega os arquivos de contexto e instruções
 def carregar_arquivo(nome):
-    caminho = Path("Templates") / nome
-    return caminho.read_text(encoding="utf-8")
+    with open(os.path.join("Templates", nome), "r", encoding="utf-8") as f:
+        return f.read()
 
 contexto = carregar_arquivo("contexto.txt")
 instrucoes = carregar_arquivo("instrucoes_bot.txt")
 
-# 🎙️ Transcrição do áudio
+# Transcreve áudio vindo do WhatsApp usando Whisper
 def transcrever_audio_whatsapp(audio_id):
     url = f"https://graph.facebook.com/v17.0/{audio_id}"
     headers = {"Authorization": f"Bearer {whatsapp_token}"}
-    
-    r = requests.get(url, headers=headers)
-    audio_url = r.json().get("url")
-    if not audio_url:
-        print("❌ URL de áudio não encontrada.")
-        return "Erro ao obter áudio."
 
+    r = requests.get(url, headers=headers)
+    audio_url = r.json()["url"]
     audio_response = requests.get(audio_url, headers=headers)
     audio_bytes = BytesIO(audio_response.content)
     audio_bytes.name = "audio.ogg"
 
-    print("🎧 Enviando áudio para transcrição...")
     transcricao = client.audio.transcriptions.create(
         model="whisper-1",
         file=audio_bytes,
@@ -56,7 +45,7 @@ def transcrever_audio_whatsapp(audio_id):
     )
     return transcricao
 
-# 💬 Pergunta para OpenAI
+# Pergunta ao modelo da OpenAI
 def perguntar_openai(pergunta):
     resposta = client.chat.completions.create(
         model="gpt-3.5-turbo",
@@ -66,23 +55,22 @@ def perguntar_openai(pergunta):
             {"role": "user", "content": pergunta}
         ],
         max_tokens=1000,
-        temperature=0.5
+        temperature=0
     )
     return resposta.choices[0].message.content
 
-# 🗣️ Gera áudio da resposta
+# Gera um áudio com a resposta da IA
 def criar_audio_resposta(texto):
-    if ARQUIVO_AUDIO.exists():
-        ARQUIVO_AUDIO.unlink()
+    if Path(ARQUIVO_AUDIO).exists():
+        Path(ARQUIVO_AUDIO).unlink()
     resposta = client.audio.speech.create(
         model="tts-1",
         voice="nova",
         input=texto
     )
     resposta.write_to_file(ARQUIVO_AUDIO)
-    print("🔊 Áudio salvo em:", ARQUIVO_AUDIO)
 
-# 📤 Envia texto para WhatsApp
+# Envia mensagem de texto via WhatsApp
 def enviar_texto(numero, mensagem):
     url = f"https://graph.facebook.com/v17.0/{whatsapp_phone_id}/messages"
     headers = {
@@ -98,14 +86,14 @@ def enviar_texto(numero, mensagem):
     response = requests.post(url, headers=headers, json=payload)
     print("📤 Texto enviado:", response.status_code, response.text)
 
-# 📤 Envia áudio para WhatsApp
+# Envia áudio gerado pela IA
 def enviar_audio(numero):
-    audio_link = f"https://{request.host}/audio/{ARQUIVO_AUDIO.name}"
     url = f"https://graph.facebook.com/v17.0/{whatsapp_phone_id}/messages"
     headers = {
         "Authorization": f"Bearer {whatsapp_token}",
         "Content-Type": "application/json"
     }
+    audio_link = f"https://{request.host}/audio/{ARQUIVO_AUDIO}"
     payload = {
         "messaging_product": "whatsapp",
         "to": numero,
@@ -115,12 +103,12 @@ def enviar_audio(numero):
     response = requests.post(url, headers=headers, json=payload)
     print("📤 Áudio enviado:", response.status_code, response.text)
 
-# 🔈 Servir áudio gerado
+# Rota para servir o áudio
 @app.route("/audio/<filename>")
 def servir_audio(filename):
-    return send_from_directory(PASTA_AUDIO, filename)
+    return send_from_directory(".", filename)
 
-# 🌐 Webhook do WhatsApp
+# Webhook
 @app.route("/webhook", methods=["GET", "POST"])
 def webhook():
     if request.method == "GET":
@@ -128,46 +116,53 @@ def webhook():
         token = request.args.get("hub.verify_token")
         challenge = request.args.get("hub.challenge")
         if mode == "subscribe" and token == verify_token:
-            print("✅ Webhook verificado com sucesso.")
+            print("✅ Webhook verificado com sucesso!")
             return Response(challenge, status=200)
-        return "Erro de verificação", 403
+        return "Erro na verificação", 403
 
     if request.method == "POST":
+        data = request.get_json()
+        agora_brasil = datetime.now(timezone.utc) - timedelta(hours=3)
+        print(f"📥 [Horário Brasil] {agora_brasil.strftime('%Y-%m-%d %H:%M:%S')}")
+        print("📩 Dados recebidos no webhook:", data)
+
         try:
-            data = request.get_json()
-            print("📨 Payload recebido:", data)
+            value = data["entry"][0]["changes"][0]["value"]
+            print("🔍 Conteúdo de value:", value)
 
-            value = data.get("entry", [{}])[0].get("changes", [{}])[0].get("value", {})
-            mensagens = value.get("messages", [])
-            if not mensagens:
-                print("⚠️ Nenhuma mensagem encontrada.")
-                return jsonify({"status": "sem mensagens"}), 200
+            if "messages" in value:
+                print("✅ Campo 'messages' encontrado.")
+                mensagem = value["messages"][0]
+                print("💬 Mensagem completa:", mensagem)
 
-            mensagem = mensagens[0]
-            tipo = mensagem.get("type")
-            numero = mensagem.get("from")
+                tipo = mensagem["type"]
+                numero = mensagem["from"]
 
-            print(f"💬 Mensagem recebida de {numero}, tipo: {tipo}")
+                if tipo == "text":
+                    texto = mensagem["text"]["body"]
+                elif tipo == "audio":
+                    audio_id = mensagem["audio"]["id"]
+                    print("🔊 ID do áudio:", audio_id)
+                    texto = transcrever_audio_whatsapp(audio_id)
+                else:
+                    texto = "Desculpe, só entendo texto e áudio por enquanto."
 
-            if tipo == "text":
-                texto = mensagem.get("text", {}).get("body", "")
-            elif tipo == "audio":
-                audio_id = mensagem.get("audio", {}).get("id")
-                texto = transcrever_audio_whatsapp(audio_id)
+                print("📝 Texto interpretado:", texto)
+
+                resposta = perguntar_openai(texto)
+                print("🤖 Resposta da IA:", resposta)
+
+                enviar_texto(numero, resposta)
+                criar_audio_resposta(resposta)
+                enviar_audio(numero)
             else:
-                texto = "Desculpe, só entendo mensagens de texto ou áudio."
-
-            resposta = perguntar_openai(texto)
-            enviar_texto(numero, resposta)
-            criar_audio_resposta(resposta)
-            enviar_audio(numero)
+                print("⚠️ Nenhuma mensagem encontrada em value.")
 
         except Exception as e:
-            print("❌ Erro no processamento:", e)
+            print("❌ Erro ao processar mensagem:", e)
 
         return jsonify({"status": "ok"}), 200
 
-# ▶️ Início do servidor
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5050))
     app.run(host="0.0.0.0", port=port)
